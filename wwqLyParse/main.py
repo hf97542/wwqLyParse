@@ -25,11 +25,8 @@ if __name__ == "__main__":
     del sys
     del os
 
-try:
-    from .common import *
-except Exception as e:
-    from common import *
-
+import sys
+import os
 import logging
 
 logging.basicConfig(level=logging.DEBUG,
@@ -42,8 +39,28 @@ if __name__ == "__main__":
             logging.info("gevent.monkey.patch_all()")
             logging.info("use gevent.pool")
             logging.info("use %s" % gevent.config.loop)
+            logging.info("gevent version: %s" % gevent.__version__)
+            try:
+                import gevent.libuv.loop
+                logging.info(gevent.libuv.loop.get_version())
+            except Exception:
+                pass
         else:
             logging.info("use simple pool")
+
+try:
+    from .common import *
+except Exception as e:
+    from common import *
+
+if __name__ == "__main__":
+    if not os.environ.get("NOT_LOGGING", None):
+        if gevent:
+            try:
+                gevent.config.resolver = 'dnspython'
+            except Exception:
+                pass
+            logging.info("use %s" % gevent.config.resolver)
 
 try:
     from .lib.lib_wwqLyParse import *
@@ -52,6 +69,7 @@ except Exception as e:
 
 import re, threading, sys, json, os, time, logging, importlib
 from argparse import ArgumentParser
+from typing import Dict, Tuple, List
 
 # try:
 #     from flask import Flask, request, abort
@@ -76,7 +94,6 @@ version = {
 PARSE_TIMEOUT = 90  # must > 5
 CLOSE_TIMEOUT = 10
 RECV_TIMEOUT = 60
-PROCESS_WAIT_SECS = 1
 
 parser_class_map = import_by_name(module_names=get_all_filename_by_dir('./parsers'), prefix="parsers.",
                                   super_class=Parser)
@@ -145,9 +162,9 @@ def init_version():
     except:
         logging.warning("YKDLParser version get error")
     try:
-        version['name'] = version['name'] + parser_class_map["LuluParser"]().get_version() + "&"
+        version['name'] = version['name'] + parser_class_map["AnnieParser"]().get_version() + "&"
     except:
-        logging.warning("LuluParser version get error")
+        logging.warning("AnnieParser version get error")
     version['name'] = version['name'] + "]" + " Running on Python %s" % sys.version
 
 
@@ -353,54 +370,61 @@ def _handle(data):
     return byte_str
 
 
-def handle(conn_list: list, conn: multiprocessing_connection.Connection):
+def handle(conn_list: list, conn: multiprocessing_connection.Connection, c_send: multiprocessing_connection.Connection):
     try:
-        logging.debug("parse conn %s" % conn)
         if not conn.closed:
             data = conn.recv_bytes()
             if not data:
-                conn.close()
                 raise EOFError
+            logging.debug("parse conn %s" % conn)
             # logging.debug(data)
             result = _handle(data)
             conn.send_bytes(result)
             conn_list.append(conn)
-            return
+            c_send.send_bytes(b'ok')
     except EOFError:
-        pass
+        logging.debug("conn %s was eof" % conn)
+        conn.close()
     except BrokenPipeError:
-        pass
-    try:
-        logging.debug("remove conn %s" % conn)
-    except ValueError:
-        pass
+        logging.debug("conn %s was broken" % conn)
+        conn.close()
 
 
-def _process(conn_list: list, handle_pool: WorkerPool, wait=multiprocessing_connection.wait):
+def _process(conn_list: List[multiprocessing_connection.Connection],
+             handle_pool: WorkerPool,
+             c_recv: multiprocessing_connection.Connection,
+             c_send: multiprocessing_connection.Connection,
+             wait=multiprocessing_connection.wait):
     while True:
         try:
-            if not conn_list:
-                time.sleep(PROCESS_WAIT_SECS)
-            for conn in wait(conn_list, PROCESS_WAIT_SECS):
+            for conn in wait(conn_list):
+                if conn == c_recv:
+                    c_recv.recv_bytes()
+                    continue
                 conn_list.remove(conn)
-                handle_pool.spawn(handle, conn_list, conn)
+                if not conn.closed:
+                    handle_pool.spawn(handle, conn_list, conn, c_send)
+                else:
+                    logging.debug("conn %s was closed" % conn)
         except:
             logging.exception("error")
 
 
 def _run(address):
     with WorkerPool(thread_name_prefix="HandlePool") as handle_pool:
-        with multiprocessing_connection.Wait() as wait:
-            with multiprocessing_connection.Listener(address, authkey=get_uuid()) as listener:
-                conn_list = list()
-                handle_pool.spawn(_process, conn_list, handle_pool, wait)
-                while True:
-                    try:
-                        conn = listener.accept()
-                        logging.debug("get a new conn %s" % conn)
-                        conn_list.append(conn)
-                    except:
-                        logging.exception("error")
+        with multiprocessing_connection.Listener(address, authkey=get_uuid()) as listener:
+            c_recv, c_send = multiprocessing_connection.Pipe(False)
+            conn_list = list()
+            conn_list.append(c_recv)
+            handle_pool.spawn(_process, conn_list, handle_pool, c_recv, c_send)
+            while True:
+                try:
+                    conn = listener.accept()
+                    logging.debug("get a new conn %s" % conn)
+                    conn_list.append(conn)
+                    c_send.send_bytes(b'ok')
+                except:
+                    logging.exception("error")
 
 
 def run(pipe):

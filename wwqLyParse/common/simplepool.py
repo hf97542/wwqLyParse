@@ -6,6 +6,7 @@ import functools
 import itertools
 import weakref
 import threading
+import logging
 from queue import Queue, Empty
 import time
 from .concurrent_futures import ThreadPoolExecutor as _ThreadPoolExecutor
@@ -95,6 +96,13 @@ class Pool(object):
         except ValueError:
             pass
 
+    def apply(self, func, args=None, kwds=None):
+        if args is None:
+            args = ()
+        if kwds is None:
+            kwds = {}
+        return self.spawn(func, *args, **kwds).result()
+
     def spawn(self, call_method, *k, **kk):
         f = functools.partial(call_method, *k, **kk)
         future = self.ex.submit(f)
@@ -116,6 +124,7 @@ class Pool(object):
 class ThreadPool(Pool):
     def __init__(self, size=None, hub=None):
         super(ThreadPool, self).__init__(size)
+        logging.debug("new pool %s" % self)
 
     def apply(self, func, args=None, kwds=None):
         return self.spawn(func, *args, **kwds).result()

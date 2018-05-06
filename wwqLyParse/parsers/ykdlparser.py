@@ -34,7 +34,7 @@ try:
 
         # make arg
         def _make_arg(self, url, _format=None, use_info=False, *k, **kk):
-            arg = self._make_proxy_arg()
+            arg = []
             # NOTE ignore __default__ format
             if _format and (_format != '__default__'):
                 arg += ['--format', _format]
@@ -42,9 +42,6 @@ try:
             arg += ['--debug']
             arg += ['--json', url]
             return arg
-
-        def _run(self, arg, need_stderr=False):
-            return super(YKDLParser, self)._run(arg, need_stderr)
 
         def get_version(self):
             try:
@@ -54,9 +51,6 @@ try:
                 return stdout.split('(')[1].split(')')[0]
             except Exception as e:
                 logging.exception("get version error")
-                # print(e)
-                # import traceback
-                # traceback.print_exc()
             return ""
 
 except:

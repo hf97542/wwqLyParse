@@ -12,9 +12,6 @@ except Exception as e:
 
 __MODULE_CLASS_NAMES__ = ["YouGetParser"]
 
-# paths from plugin root_path
-proxy_config_file = './etc/proxy_config.json'
-
 
 class YouGetParser(Parser):
     filters = ['^(http|https)://.+']
@@ -26,37 +23,9 @@ class YouGetParser(Parser):
     bin = './you-get/you-get'
     name = "you-get解析"
 
-    # print exception function
-    def _print_exception(self, e):
-        line = traceback.format_exception(Exception, e, e.__traceback__)
-        text = ('').join(line)
-        return text
-
-    # load config file
-    def _load_config_file(self):
-        fpath = get_real_path(proxy_config_file)
-        with open(fpath, 'rb') as f:
-            blob = f.read()
-        text = blob.decode('utf-8')
-        info = json.loads(text)
-        return info
-
-    # make proxy arg
-    def _make_proxy_arg(self):
-        try:
-            info = self._load_config_file()
-            ptype = info['proxy_type']
-            if ptype == 'no_proxy':
-                return ['--no-proxy']
-            elif ptype == 'user_proxy':
-                return ['--extractor-proxy', info['proxy_server']]
-            return []
-        except Exception as e:
-            return []  # use system default proxy
-
     # make you-get arg
     def _make_arg(self, url, _format=None, use_info=True, password=None, *k, **kk):
-        arg = self._make_proxy_arg()
+        arg = []
         if password:
             arg += ['--password', password]
         # NOTE ignore __default__ format
@@ -86,54 +55,12 @@ class YouGetParser(Parser):
             args = [py_bin, '--normal', y_bin]
         else:
             args = [py_bin, y_bin]
-        args = args + arg
-        PIPE = subprocess.PIPE
-        logging.debug(args)
-        p = subprocess.Popen(args, stdout=PIPE, stderr=PIPE if need_stderr else None, shell=False)
-        try:
-            stdout, stderr = p.communicate(timeout=get_main().PARSE_TIMEOUT - 5)
-        except subprocess.TimeoutExpired:
-            logging.debug("Timeout!!! %s kill %s" % (self.__class__.__name__, str(p)))
-            p.kill()
-            stdout, stderr = p.communicate()
-        # try to decode
-        stdout = try_decode(stdout)
-        stderr = try_decode(stderr) if need_stderr else None
-        # print(stdout)
-        return stdout, stderr
-
-    # make label
-    def _make_label(self, stream):
-        _format = stream['_format']
-        _id = stream['_id']
-        quality = stream['video_profile']
-        try:
-            size_str = byte2size(stream['size'], False)
-            size = byte2size(stream['size'], True)
-        except:
-            size_str = "0"
-            size = 0
-        _format = str(_format).replace("_", "!")
-        l = '_'.join([str(_id), _format, quality, size_str])
-        ext = stream['container']
-        return l, _format, size, ext
-
-    # parse label
-    def _parse_label(self, raw):
-        if '_' in raw:
-            parts = raw.split('_')
-            _format = parts[1]
-            _format = str(_format).replace("!", "_")
-            return _format
-        raw = str(raw).replace("!", "_")
-        return raw
+        args += arg
+        return run_subprocess(args, get_main().PARSE_TIMEOUT - 5, need_stderr)
 
     # parse you-get output for parse
     def _parse_parse(self, raw):
-        out = {}
-        out['type'] = 'formats'
-        out['name'] = raw['title'] + '_' + raw['site']
-        out['data'] = []
+        out = {'type': 'formats', 'name': raw['title'] + '_' + raw['site'], 'data': []}
         stream = []
         for _format, s in raw['streams'].items():
             s['_format'] = _format
@@ -153,8 +80,9 @@ class YouGetParser(Parser):
         # process each stream
         for s in stream:
             one = {}
-            label, code, size, ext = self._make_label(s)
-            one['label'] = label
+            _label, code, size = make_label(s['_format'], s['_id'], s['video_profile'], s.get('size', 0))
+            ext = s['container']
+            one['label'] = _label
             one['code'] = code
             one['ext'] = ext
             one['size'] = size
@@ -190,10 +118,7 @@ class YouGetParser(Parser):
             referer = stream['refer']
         out = []
         for u in urls:
-            one = {}
-            one['protocol'] = 'http'
-            one['args'] = {}
-            one['urls'] = u
+            one = {'protocol': 'http', 'args': {}, 'urls': u}
             if container == "m3u8":
                 one['protocol'] = 'm3u8'
                 if not isinstance(one['urls'], list):
@@ -213,18 +138,7 @@ class YouGetParser(Parser):
 
     # try parse json
     def _try_parse_json(self, raw_text):
-        while True:
-            try:
-                info = json.loads(raw_text)
-                return info
-            except Exception as e:
-                try:
-                    rest = '{' + raw_text.split('{', 1)[1]
-                except IndexError:
-                    raise e
-                if rest == raw_text:
-                    raise
-                raw_text = rest
+        return try_parse_json(raw_text)
 
     def _try_parse_info(self, raw_text):
         """
@@ -264,25 +178,6 @@ streams:             # Available quality and codecs
         :return: 
         """
 
-        def get_item_from_str(string, key):
-            string = str(string)
-            if string.startswith(key):
-                string_array = string.split(key, 1)
-                if len(string_array) == 2:
-                    return string_array[1].strip()
-
-        def mime_to_container(mime):
-            mapping = {
-                'video/3gpp': '3gp',
-                'video/mp4': 'mp4',
-                'video/webm': 'webm',
-                'video/x-flv': 'flv',
-            }
-            if mime in mapping:
-                return mapping[mime]
-            else:
-                return mime.split('/')[1]
-
         data_array = raw_text.splitlines()
         info = {"site": "", "title": "", "streams": {}}
         last_format_dict = None
@@ -296,14 +191,14 @@ streams:             # Available quality and codecs
             title = get_item_from_str(item, "title:")
             if title:
                 info["title"] = title
-            format = get_item_from_str(item, "- format:")
-            if format:
+            _format = get_item_from_str(item, "- format:")
+            if _format:
                 last_format_dict = {
                     "container": "",
                     "video_profile": "",
                     "size": ""
                 }
-                info["streams"][format] = last_format_dict
+                info["streams"][_format] = last_format_dict
             container = get_item_from_str(item, "container:")
             if container:
                 last_format_dict["container"] = container
@@ -336,7 +231,7 @@ streams:             # Available quality and codecs
         return info
 
     # parse functions
-    def _Parse(self, url, *k, **kk):
+    def _parse(self, url, *k, **kk):
         yarg = self._make_arg(url, *k, **kk)
         stdout, stderr = self._run(yarg)
         # print(stdout)
@@ -359,7 +254,7 @@ streams:             # Available quality and codecs
                 e_text += '[[stderr]] \n' + stderr
             e_text += '\n [[stdout]] \n' + stdout
             if err:
-                e_text += '\n ERROR info \n' + self._print_exception(err)
+                e_text += '\n ERROR info \n' + print_exception(err)
             return {
                 'error': e_text,
             }
@@ -368,7 +263,7 @@ streams:             # Available quality and codecs
         return out
 
     def parse(self, url, *k, **kk):
-        out = self._Parse(url, *k, **kk)
+        out = self._parse(url, *k, **kk)
         # if "bilibili" in url:
         #     for item in out['data']:
         #         if isinstance(item, dict):
@@ -385,8 +280,8 @@ streams:             # Available quality and codecs
         #                             item2["args"] = {'Referer': url}
         return out
 
-    def _ParseURL(self, url, label, min=None, max=None, *k, **kk):
-        _format = self._parse_label(label)
+    def _parse_url(self, url, label, min=None, max=None, *k, **kk):
+        _format = parse_label(label)
         yarg = self._make_arg(url, _format, *k, **kk)
         stdout, stderr = self._run(yarg)
         # just load json, without ERROR check
@@ -396,7 +291,7 @@ streams:             # Available quality and codecs
         return out
 
     def parse_url(self, url, label, min=None, max=None, *k, **kk):
-        out = self._ParseURL(url, label, min, max, *k, **kk)
+        out = self._parse_url(url, label, min, max, *k, **kk)
         if "iqiyi" in url:
             for item in out:
                 item["unfixIp"] = True
@@ -427,7 +322,4 @@ streams:             # Available quality and codecs
             return stderr.split(',')[0]
         except Exception as e:
             logging.exception("get version error")
-            # print(e)
-            # import traceback
-            # traceback.print_exc()
         return ""
