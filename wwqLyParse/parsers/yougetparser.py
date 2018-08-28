@@ -10,15 +10,16 @@ try:
 except Exception as e:
     from common import *
 
-__MODULE_CLASS_NAMES__ = ["YouGetParser"]
+__all__ = ["YouGetParser"]
 
 
 class YouGetParser(Parser):
     filters = ['^(http|https)://.+']
     types = ["formats"]
     un_supports = ["www.iqiyi.com", "www.iqiyi.com/a_", 'www.iqiyi.com/lib/m', 'list.iqiyi.com', 'list.youku.com',
-                   'www.le.com', 'www.mgtv.com', 'yinyuetai.com',
+                   'www.le.com', 'www.mgtv.com', 'yinyuetai.com', 'pptv.com',
                    r'^(http|https)://cache.',
+                   r'^(http|https)://defaultts.tc.qq.com.',
                    r'^(http|https)://\d+\.\d+\.\d+\.\d+']
     bin = './you-get/you-get'
     name = "you-get解析"
@@ -47,16 +48,25 @@ class YouGetParser(Parser):
             py_bin = py_bin.replace("wwqLyParse32.exe", "wwqLyParse32-youget.exe")
         return py_bin
 
+    def _get_proxy_args(self, port):
+        return ["--http-proxy", "localhost:%s" % port]
+
     # run you-get
-    def _run(self, arg, need_stderr=False):
+    def _run(self, arg, need_stderr=False, use_hps=True):
         y_bin = get_real_path(self.bin)
         py_bin = self._get_py_bin()
         if "PyRun.exe" in py_bin:
             args = [py_bin, '--normal', y_bin]
         else:
             args = [py_bin, y_bin]
-        args += arg
-        return run_subprocess(args, get_main().PARSE_TIMEOUT - 5, need_stderr)
+        if use_hps:
+            with HttpProxyServer() as hps:
+                args += self._get_proxy_args(hps.port)
+                args += arg
+                return run_subprocess(args, get_main().PARSE_TIMEOUT - 5, need_stderr)
+        else:
+            args += arg
+            return run_subprocess(args, get_main().PARSE_TIMEOUT - 5, need_stderr)
 
     # parse you-get output for parse
     def _parse_parse(self, raw):
@@ -254,7 +264,7 @@ streams:             # Available quality and codecs
                 e_text += '[[stderr]] \n' + stderr
             e_text += '\n [[stdout]] \n' + stdout
             if err:
-                e_text += '\n ERROR info \n' + print_exception(err)
+                e_text += '\n ERROR info \n' + format_exception(err)
             return {
                 'error': e_text,
             }
@@ -316,7 +326,7 @@ streams:             # Available quality and codecs
 
     def get_version(self):
         try:
-            stdout, stderr = self._run(['--version'], True)
+            stdout, stderr = self._run(['--version'], need_stderr=True, use_hps=False)
             if "Errno" in stderr:
                 return ""
             return stderr.split(',')[0]

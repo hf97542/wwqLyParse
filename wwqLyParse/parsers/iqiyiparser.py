@@ -15,7 +15,7 @@ try:
 except Exception as e:
     from common import *
 
-__MODULE_CLASS_NAMES__ = ["IQiYiParser"]
+__all__ = ["IQiYiParser"]
 
 import json
 import time
@@ -63,7 +63,7 @@ def getvps(tvid, vid):
 
 
 class IQiYiParser(Parser):
-    filters = ['http://www.iqiyi.com/']
+    filters = ['http(s?)://www.iqiyi.com/']
     un_supports = ['www.iqiyi.com/(lib/m|a_)']
     types = ["formats"]
 
@@ -109,14 +109,36 @@ class IQiYiParser(Parser):
             stream_type = {'id': stream_id, 'container': 'flv', 'video_profile': stream_id}
         return stream_type
 
-    def get_vps_data(self, url):
+    def get_vid_and_title(self, url):
         html = get_url(url)
-        tvid = r1(r'#curid=(.+)_', url) or \
-               r1(r'tvid=([^&]+)', url) or \
-               r1(r'data-player-tvid="([^"]+)"', html)
-        videoid = r1(r'#curid=.+_(.*)$', url) or \
-                  r1(r'vid=([^&]+)', url) or \
-                  r1(r'data-player-videoid="([^"]+)"', html)
+        video_info = match1(html, ":video-info='(.+?)'")
+        if video_info:
+            video_info = json.loads(video_info)
+            logging.debug(video_info)
+            tvid = str(video_info['tvId'])
+            videoid = str(video_info['vid'])
+            title = str(video_info['name'])
+        else:
+            tvid = match1(html,
+                          '#curid=(.+)_',
+                          'data-player-tvid="([^"]+)"',
+                          'tvid=([^&]+)',
+                          'tvId:([^,]+)',
+                          r'''param\['tvid'\]\s*=\s*"(.+?)"''',
+                          r'"tvid":\s*"(\d+)"'
+                          )
+            videoid = match1(html,
+                             '#curid=.+_(.*)$',
+                             'data-player-videoid="([^"]+)"',
+                             'vid=([^&]+)',
+                             'vid:"([^"]+)',
+                             r'''param\['vid'\]\s*=\s*"(.+?)"''',
+                             r'"vid":\s*"(\w+)"'
+                             )
+            title = match1(html, '<title>([^<]+)').split('-')[0]
+        return tvid, videoid, title
+
+    def get_vps_data(self, tvid, videoid):
         vps_data = getvps(tvid, videoid)
         assert vps_data['code'] == 'A00000', 'can\'t play this video!!'
 
@@ -137,9 +159,9 @@ class IQiYiParser(Parser):
         }
         url = input_text
         html = get_url(url)
-        title = match1(html, '<title>([^<]+)').split('-')[0]
+        tvid, videoid, title = self.get_vid_and_title(url)
         data["name"] = title
-        vps_data = self.get_vps_data(url)
+        vps_data = self.get_vps_data(tvid, videoid)
         url_prefix = vps_data['data']['vp']['du']
         stream = vps_data['data']['vp']['tkl'][0]
         vs_array = stream['vs']
@@ -166,11 +188,11 @@ class IQiYiParser(Parser):
         return data
 
     def parse_url(self, input_text, label, min=None, max=None, *k, **kk):
-        def _worker(url, url_list, session):
+        def _worker(url, url_list):
             try:
                 if len(url_list) > 5:
                     return
-                json_data = json.loads(get_url(url, allow_cache=False, session=session))
+                json_data = json.loads(get_url(url, allow_cache=False))
                 logging.debug(json_data)
                 down_url = json_data['l']
                 # url_head = r1(r'https?://([^/]*)', down_url)
@@ -185,7 +207,8 @@ class IQiYiParser(Parser):
             use_pool = False
         url = input_text
         data = []
-        vps_data = self.get_vps_data(url)
+        tvid, videoid, title = self.get_vid_and_title(url)
+        vps_data = self.get_vps_data(tvid, videoid)
         url_prefix = vps_data['data']['vp']['du']
         stream = vps_data['data']['vp']['tkl'][0]
         vs_array = stream['vs']
@@ -208,21 +231,20 @@ class IQiYiParser(Parser):
                         "unfixIp": True
                     }
                     data.append(info)
-                with get_session() as session:
-                    if use_pool:
-                        with WorkerPool(10) as pool:
-                            for _ in range(10):
-                                for seg_info in fs_array:
-                                    url = url_prefix + seg_info['l']
-                                    url_list = url_dict[url]
-                                    pool.spawn(_worker, url, url_list, session)
-                            pool.join(timeout=self.parse_timeout)
+                if use_pool:
+                    with WorkerPool(10) as pool:
+                        for _ in range(10):
+                            for seg_info in fs_array:
+                                url = url_prefix + seg_info['l']
+                                url_list = url_dict[url]
+                                pool.spawn(_worker, url, url_list)
+                        pool.join(timeout=self.parse_timeout)
 
-                    for seg_info in fs_array:
-                        url = url_prefix + seg_info['l']
-                        url_list = url_dict[url]
-                        if len(url_list) == 0:
-                            _worker(url, url_list, session)
+                for seg_info in fs_array:
+                    url = url_prefix + seg_info['l']
+                    url_list = url_dict[url]
+                    if len(url_list) == 0:
+                        _worker(url, url_list)
 
                 return data
         return []

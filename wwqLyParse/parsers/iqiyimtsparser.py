@@ -15,11 +15,11 @@ try:
 except Exception as e:
     from common import *
 
-__MODULE_CLASS_NAMES__ = ["IQiYiMTsParser"]
+__all__ = ["IQiYiMTsParser"]
 
 
 class IQiYiMTsParser(Parser):
-    filters = ['http://www.iqiyi.com/']
+    filters = ['http(s?)://www.iqiyi.com/']
     un_supports = ['www.iqiyi.com/(lib/m|a_)']
     types = ["formats"]
 
@@ -84,13 +84,31 @@ class IQiYiMTsParser(Parser):
         }
         url = input_text
         html = get_url(url)
-        tvid = r1(r'#curid=(.+)_', url) or \
-               r1(r'tvid=([^&]+)', url) or \
-               r1(r'data-player-tvid="([^"]+)"', html)
-        videoid = r1(r'#curid=.+_(.*)$', url) or \
-                  r1(r'vid=([^&]+)', url) or \
-                  r1(r'data-player-videoid="([^"]+)"', html)
-        title = match1(html, '<title>([^<]+)').split('-')[0]
+        video_info = match1(html, ":video-info='(.+?)'")
+        if video_info:
+            video_info = json.loads(video_info)
+            logging.debug(video_info)
+            tvid = str(video_info['tvId'])
+            videoid = str(video_info['vid'])
+            title = video_info['name']
+        else:
+            tvid = match1(html,
+                          '#curid=(.+)_',
+                          'data-player-tvid="([^"]+)"',
+                          'tvid=([^&]+)',
+                          'tvId:([^,]+)',
+                          r'''param\['tvid'\]\s*=\s*"(.+?)"''',
+                          r'"tvid":\s*"(\d+)"'
+                          )
+            videoid = match1(html,
+                             '#curid=.+_(.*)$',
+                             'data-player-videoid="([^"]+)"',
+                             'vid=([^&]+)',
+                             'vid:"([^"]+)',
+                             r'''param\['vid'\]\s*=\s*"(.+?)"''',
+                             r'"vid":\s*"(\w+)"'
+                             )
+            title = match1(html, '<title>([^<]+)').split('-')[0]
         # self.vid = (tvid, videoid)
         info = self.getVMS(tvid, videoid)
         assert info['code'] == 'A00000', 'can\'t play this video'

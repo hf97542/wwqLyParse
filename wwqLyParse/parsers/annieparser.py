@@ -10,25 +10,34 @@ try:
 except Exception as e:
     from common import *
 
-__MODULE_CLASS_NAMES__ = ["AnnieParser"]
+__all__ = ["AnnieParser"]
 
 
 class AnnieParser(Parser):
     filters = ['^(http|https)://.+']
     types = ["formats"]
     un_supports = ["www.iqiyi.com", "www.iqiyi.com/a_", 'www.iqiyi.com/lib/m', 'list.iqiyi.com', 'list.youku.com',
-                   'www.le.com', 'www.mgtv.com', 'yinyuetai.com',
+                   'www.le.com', 'www.mgtv.com', 'yinyuetai.com', 'pptv.com',
                    r'^(http|https)://cache.',
+                   r'^(http|https)://defaultts.tc.qq.com.',
                    r'^(http|https)://\d+\.\d+\.\d+\.\d+']
     name = "Annie解析"
 
-    def _run(self, arg, need_stderr=False):
+    def _run(self, arg, need_stderr=False, use_hps=True):
         if sysconfig.get_platform() == "win-amd64":
             annie_bin = get_real_path('./annie/annie64.exe')
         else:
             annie_bin = get_real_path('./annie/annie32.exe')
-        args = [annie_bin] + arg
-        return run_subprocess(args, get_main().PARSE_TIMEOUT - 5, need_stderr)
+        if use_hps:
+            with HttpProxyServer() as hps:
+                args = [annie_bin]
+                args += ['-x', "http://localhost:%s" % hps.port]
+                args += arg
+                return run_subprocess(args, get_main().PARSE_TIMEOUT - 5, need_stderr)
+        else:
+            args = [annie_bin]
+            args += arg
+            return run_subprocess(args, get_main().PARSE_TIMEOUT - 5, need_stderr)
 
     def _make_arg(self, url, _format=None, use_info=False, *k, **kk):
         # arg = self._make_proxy_arg()
@@ -199,7 +208,7 @@ Streams:   # All available quality
                 e_text += '[[stderr]] \n' + stderr
             e_text += '\n [[stdout]] \n' + stdout
             if err:
-                e_text += '\n ERROR info \n' + print_exception(err)
+                e_text += '\n ERROR info \n' + format_exception(err)
             return {
                 'error': e_text,
             }
@@ -254,7 +263,7 @@ Streams:   # All available quality
 
     def get_version(self):
         try:
-            stdout, stderr = self._run(['-v'], False)
+            stdout, stderr = self._run(['-v'], need_stderr=False, use_hps=False)
             return stdout.split(',')[0]
         except Exception as e:
             logging.exception("get version error")

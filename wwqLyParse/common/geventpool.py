@@ -3,6 +3,7 @@
 # author wwqgtxx <wwqgtxx@gmail.com>
 
 from gevent import GreenletExit
+from gevent import wait as _wait
 from gevent.pool import Pool as _Pool
 from gevent.threadpool import ThreadPool as _ThreadPool
 from gevent.queue import Queue
@@ -38,4 +39,4 @@ class ThreadPool(_ThreadPool):
             maxsize = 1000
         self.__size = 0
         super(ThreadPool, self).__init__(maxsize, hub)
-        logging.debug("new pool %s" % self)
+        logging.debug("new GeventThreadPool %s" % self)

@@ -10,17 +10,13 @@ try:
 except Exception as e:
     from common import *
 
-__MODULE_CLASS_NAMES__ = ["YKDLParser"]
+__all__ = ["YKDLParser"]
 try:
-    try:
-        from . import yougetparser
-    except Exception as e:
-        import yougetparser
+    from .yougetparser import YouGetParser
 
+    class YKDLParser(YouGetParser):
 
-    class YKDLParser(yougetparser.YouGetParser):
-
-        un_supports = yougetparser.YouGetParser.un_supports  # + ['www.iqiyi.com']
+        un_supports = YouGetParser.un_supports  # + ['www.iqiyi.com']
         bin = './ykdl/ykdl.py'
         name = "YouKuDownLoader解析"
 
@@ -31,6 +27,9 @@ try:
             elif "wwqLyParse32.exe" in py_bin:
                 py_bin = py_bin.replace("wwqLyParse32.exe", "wwqLyParse32-ykdl.exe")
             return py_bin
+
+        def _get_proxy_args(self, port):
+            return ["--proxy", "http://localhost:%s" % port]
 
         # make arg
         def _make_arg(self, url, _format=None, use_info=False, *k, **kk):
@@ -45,7 +44,7 @@ try:
 
         def get_version(self):
             try:
-                stdout, stderr = self._run(['-h'], True)
+                stdout, stderr = self._run(['-h'], need_stderr=True, use_hps=False)
                 if "Errno" in stderr:
                     return ""
                 return stdout.split('(')[1].split(')')[0]
@@ -55,4 +54,4 @@ try:
 
 except:
     logging.exception("can't load yougetparser.py,it need to be super class")
-    __MODULE_CLASS_NAMES__ = []
+    __all__ = []

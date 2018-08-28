@@ -34,11 +34,19 @@ import sys
 import os
 import logging
 
-logging.basicConfig(level=logging.DEBUG,
-                    format='%(asctime)s{%(name)s}%(filename)s[line:%(lineno)d]<%(funcName)s> pid:%(process)d %(threadName)s %(levelname)s : %(message)s',
-                    datefmt='%H:%M:%S', stream=sys.stdout)
+LEVEL = logging.DEBUG
+FORMAT = '%(asctime)s{%(name)s}%(filename)s[line:%(lineno)d]<%(funcName)s> pid:%(process)d %(threadName)s %(levelname)s : %(message)s'
+DATA_FMT = '%H:%M:%S'
+logging.basicConfig(level=LEVEL, format=FORMAT, datefmt=DATA_FMT, stream=sys.stdout)
+
+try:
+    from .common import *
+except Exception as e:
+    from common import *
 
 if __name__ == "__main__":
+    get_common_real_thread_pool()
+    logging.root.addHandler(RemoteStreamHandler(ADDRESS_LOGGING, FORMAT, DATA_FMT))
     if not os.environ.get("NOT_LOGGING", None):
         if gevent:
             logging.info("gevent.monkey.patch_all()")
@@ -53,13 +61,7 @@ if __name__ == "__main__":
                 pass
         else:
             logging.info("use simple pool")
-
-try:
-    from .common import *
-except Exception as e:
-    from common import *
-
-if __name__ == "__main__":
+    get_url_service.init()
     if not os.environ.get("NOT_LOGGING", None):
         if gevent:
             try:
@@ -102,27 +104,40 @@ CLOSE_TIMEOUT = 10
 RECV_TIMEOUT = 60
 CONN_LRU_TIMEOUT = 60 * 60  # 1 hour
 
-parser_class_map = import_by_name(module_names=get_all_filename_by_dir('./parsers'), prefix="parsers.",
-                                  super_class=Parser)
-urlhandle_class_map = import_by_name(module_names=get_all_filename_by_dir('./urlhandles'), prefix="urlhandles.",
-                                     super_class=UrlHandle)
+parser_class_map = import_by_module_name(module_names=get_all_filename_by_dir('./parsers'), prefix="parsers.",
+                                         super_class=Parser)
+urlhandle_class_map = import_by_module_name(module_names=get_all_filename_by_dir('./urlhandles'), prefix="urlhandles.",
+                                            super_class=UrlHandle)
 
 
 def url_handle_parse(input_text, url_handles_name=None):
     start_time = time.time()
     if url_handles_name is not None:
-        _url_handle_class_map = import_by_name(class_names=url_handles_name, prefix="urlhandles.",
-                                               super_class=UrlHandle)
+        _url_handle_class_map = import_by_class_name(class_names=url_handles_name, prefix="urlhandles.",
+                                                     super_class=UrlHandle)
     else:
         _url_handle_class_map = urlhandle_class_map
     url_handles = new_objects(_url_handle_class_map)
+    url_handles_dict = dict()
     for url_handle_obj in url_handles:
-        for filter_str in url_handle_obj.get_filters():
-            if re.match(filter_str, input_text):
+        url_handle_order = url_handle_obj.get_order()
+        try:
+            url_handle_list = url_handles_dict[url_handle_order]
+        except KeyError:
+            url_handle_list = list()
+            url_handles_dict[url_handle_order] = url_handle_list
+        url_handle_list.append(url_handle_obj)
+    sorted_url_handles_dict_keys = sorted(url_handles_dict.keys())
+    # logging.debug({k: url_handles_dict[k] for k in sorted_url_handles_dict_keys})
+    for sorted_url_handles_dict_key in sorted_url_handles_dict_keys:
+        url_handle_list = url_handles_dict[sorted_url_handles_dict_key]
+        for url_handle_obj in url_handle_list:
+            if url_handle_obj.check_support(input_text):
                 try:
                     logging.debug(url_handle_obj)
                     result = url_handle_obj.url_handle(input_text)
-                    if (result is not None) and (result is not ""):
+                    if (result is not None) and (result is not "") and result != input_text:
+                        logging.debug('urlHandle:"' + input_text + '"-->"' + result + '"')
                         input_text = result
                     end_time = time.time()
                     if (end_time - start_time) > PARSE_TIMEOUT / 2:
@@ -132,13 +147,6 @@ def url_handle_parse(input_text, url_handles_name=None):
                     # print(e)
                     # import traceback
                     # traceback.print_exc()
-    if re.match(r'^(http|https)://', input_text):
-        try:
-            get_url(input_text)
-        except GreenletExit:
-            return None
-        except Exception:
-            logging.exception("get_url for cache")
     end_time = time.time()
     if (end_time - start_time) >= PARSE_TIMEOUT:
         return None
@@ -187,14 +195,16 @@ def get_version():
     return version
 
 
-def parse(input_text, types=None, parsers_name=None, url_handles_name=None, use_inside=False, *k, **kk):
+def parse(input_text, types=None, parsers_name=None, url_handles_name=None,
+          _use_inside=False, _inside_pool=None, _inside_queue=None,
+          *k, **kk):
     if parsers_name is not None:
-        _parser_class_map = import_by_name(class_names=parsers_name, prefix="parsers.", super_class=Parser)
+        _parser_class_map = import_by_class_name(class_names=parsers_name, prefix="parsers.", super_class=Parser)
     else:
         _parser_class_map = parser_class_map
     parsers = new_objects(_parser_class_map)
 
-    def run(queue, parser, input_text, *k, **kk):
+    def run(queue, parser, input_text, pool: WorkerPool, *k, **kk):
         try:
             logging.debug(parser)
             result = parser.parse(input_text, *k, **kk)
@@ -212,6 +222,9 @@ def parse(input_text, types=None, parsers_name=None, url_handles_name=None, use_
                     queue.put(q_result)
             elif type(result) == list:
                 queue.put(result)
+            elif type(result) == ReCallMainParseFunc:
+                wait_list = parse(*result.k, _use_inside=True, _inside_pool=pool, _inside_queue=queue, **result.kk)
+                pool.wait(wait_list)
         except GreenletExit:
             logging.warning("%s timeout exit" % parser)
         except Exception as e:
@@ -225,21 +238,19 @@ def parse(input_text, types=None, parsers_name=None, url_handles_name=None, use_
     input_text = url_handle_parse(input_text, url_handles_name)
     if not input_text:
         return None
+
     results = []
+    if _use_inside:
+        for parser in parsers:
+            if parser.check_support(input_text, types):
+                results.append(_inside_pool.spawn(run, _inside_queue, parser, input_text, _inside_pool, *k, **kk))
+        return results
     t_results = []
     q_results = Queue()
     with WorkerPool() as pool:
         for parser in parsers:
-            for filter_str in parser.get_filters():
-                if (types is None) or (not parser.get_types()) or (is_in(types, parser.get_types(), strict=False)):
-                    if re.search(filter_str, input_text):
-                        support = True
-                        for un_support in parser.get_un_supports():
-                            if re.search(un_support, input_text):
-                                support = False
-                                break
-                        if support:
-                            pool.spawn(run, q_results, parser, input_text, *k, **kk)
+            if parser.check_support(input_text, types):
+                pool.spawn(run, q_results, parser, input_text, pool, *k, **kk)
         pool.join(timeout=PARSE_TIMEOUT)
     while not q_results.empty():
         result = q_results.get()
@@ -247,13 +258,12 @@ def parse(input_text, types=None, parsers_name=None, url_handles_name=None, use_
             t_results.append(result)
         if type(result) == list:
             t_results.extend(result)
-    if use_inside:
-        return t_results
     for t_result in t_results:
         data = t_result["result"]
         try:
-            if "sorted" not in data or data["sorted"] != 1:
+            if "sorted" not in data or data["sorted"] != True:
                 data["data"] = sorted(data["data"], key=lambda d: d["label"], reverse=True)
+                data["sorted"] = True
                 logging.info("sorted the " + str(t_result["parser"]) + "'s data['data']")
         except:
             pass
@@ -279,8 +289,8 @@ def parse_url(input_text, label, min=None, max=None, url_handles_name=None, *k, 
     t_label = label.split("@")
     label = t_label[0]
     parser_name = t_label[1]
-    parser_class_map = import_by_name(class_names=[parser_name], prefix="parsers.", super_class=Parser)
-    parsers = new_objects(parser_class_map)
+    _parser_class_map = import_by_class_name(class_names=[parser_name], prefix="parsers.", super_class=Parser)
+    parsers = new_objects(_parser_class_map)
 
     input_text = parse_password(input_text, kk)
 
@@ -377,80 +387,26 @@ def _handle(data):
     return byte_str
 
 
-def handle(conn_lru_dict: LRUCacheType[multiprocessing_connection.Connection, bool],
-           conn: multiprocessing_connection.Connection, c_send: multiprocessing_connection.Connection):
-    try:
-        data = conn.recv_bytes()
-        if not data:
-            raise EOFError
-        logging.debug("parse conn %s" % conn)
-        # logging.debug(data)
-        result = _handle(data)
-        conn.send_bytes(result)
-        conn_lru_dict[conn] = True
-        c_send.send_bytes(b'ok')
-    except OSError:
-        logging.debug("conn %s was closed" % conn)
-        conn.close()
-    except EOFError:
-        logging.debug("conn %s was eof" % conn)
-        conn.close()
-    except BrokenPipeError:
-        logging.debug("conn %s was broken" % conn)
-        conn.close()
-
-
-def _process(conn_lru_dict: LRUCacheType[multiprocessing_connection.Connection, bool],
-             handle_pool: WorkerPool,
-             c_recv: multiprocessing_connection.Connection,
-             c_send: multiprocessing_connection.Connection,
-             wait=multiprocessing_connection.wait):
-    while True:
-        try:
-            for conn in wait(list(conn_lru_dict.keys()) + [c_recv]):
-                if conn == c_recv:
-                    c_recv.recv_bytes()
-                    continue
-                del conn_lru_dict[conn]
-                if not conn.closed:
-                    handle_pool.spawn(handle, conn_lru_dict, conn, c_send)
-                else:
-                    logging.debug("conn %s was closed" % conn)
-        except OSError as e:
-            if getattr(e, "winerror", 0) == 6:
-                continue
-            logging.exception("OSError")
-        except:
-            logging.exception("error")
-
-
-def _run(address):
-    with WorkerPool(thread_name_prefix="HandlePool") as handle_pool:
-        with multiprocessing_connection.Listener(address, authkey=get_uuid()) as listener:
-            c_recv, c_send = multiprocessing_connection.Pipe(False)
-
-            def after_delete_handle(t: Tuple[multiprocessing_connection.Connection, bool]):
-                k, v = t
-                logging.debug("close timeout conn %s" % k)
-                c_send.send_bytes(b'ok')
-                k.close()
-
-            conn_lru_dict = LRUCache(size=1024, timeout=CONN_LRU_TIMEOUT, after_delete_handle=after_delete_handle)
-            handle_pool.spawn(_process, conn_lru_dict, handle_pool, c_recv, c_send)
-            while True:
-                try:
-                    conn = listener.accept()
-                    logging.debug("get a new conn %s" % conn)
-                    conn_lru_dict[conn] = True
-                    c_send.send_bytes(b'ok')
-                except:
-                    logging.exception("error")
-
-
-def run(pipe):
+def run(pipe, force_start=False):
     address = r'\\.\pipe\%s@%s' % (pipe, version['version'])
     logging.info("listen address:'%s'" % address)
-    _run(address)
+    for _ in range(3 if force_start else 1):
+        try:
+            ConnectionServer(address, _handle, get_uuid()).run()
+        except PermissionError:
+            if force_start:
+                try:
+                    for _ in range(3):
+                        with multiprocessing_connection.Client(address, authkey=get_uuid()) as conn:
+                            req = {"type": "get", "url": 'close', "data": {}}
+                            req = json.dumps(req)
+                            req = req.encode("utf-8")
+                            req = lib_parse(req)
+                            conn.send_bytes(req)
+                except EOFError:
+                    pass
+            else:
+                raise
 
 
 def arg_parser():
@@ -459,9 +415,11 @@ def arg_parser():
     # parser.add_argument('--host', type=str, default='127.0.0.1', help="set listening ip")
     # parser.add_argument('-p', '--port', type=int, default=5000, help="set listening port")
     parser.add_argument('-t', '--timeout', type=int, default=PARSE_TIMEOUT,
-                        help="set parse timeout seconds, default 60s")
+                        help="set parse timeout seconds, default %ds" % PARSE_TIMEOUT)
     parser.add_argument('--close_timeout', type=int, default=CLOSE_TIMEOUT,
-                        help="set close timeout seconds, default 10s")
+                        help="set close timeout seconds, default %ds" % CLOSE_TIMEOUT)
+    parser.add_argument('--force_start', type=bool, default=False,
+                        help="force start server")
 
     parser.add_argument('-d', '--debug', type=str, default=None, help="debug a url")
     parser.add_argument('-f', '--format', type=str, default=None,
@@ -477,7 +435,7 @@ def arg_parser():
     return args
 
 
-def main(debugstr=None, parsers_name=None, types=None, label=None, pipe="wwqLyParse", timeout=PARSE_TIMEOUT,
+def main(debugstr=None, parsers_name=None, types=None, label=None, pipe=None, timeout=PARSE_TIMEOUT,
          close_timeout=CLOSE_TIMEOUT):
     logging.debug("\n------------------------------------------------------------\n")
     global PARSE_TIMEOUT
@@ -490,7 +448,9 @@ def main(debugstr=None, parsers_name=None, types=None, label=None, pipe="wwqLyPa
         else:
             debug(parse_url(debugstr, label))
     else:
-        run(pipe)
+        if not pipe:
+            pipe = args.pipe
+        run(pipe, args.force_start)
 
 
 if __name__ == '__main__':

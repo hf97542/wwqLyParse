@@ -20,7 +20,7 @@ if sys.version_info[0] == 3:
 else:
     WR_ord = ord
 
-__MODULE_CLASS_NAMES__ = ["LeParser"]
+__all__ = []  # ["LeParser"]
 
 
 class LeParser(Parser):
@@ -59,7 +59,7 @@ class LeParser(Parser):
 
     def calcTimeKey(self, t):
         ror = lambda val, r_bits: ((val & (2 ** 32 - 1)) >> r_bits % 32) | (
-            val << (32 - (r_bits % 32)) & (2 ** 32 - 1))
+                val << (32 - (r_bits % 32)) & (2 ** 32 - 1))
         magic = 185025305
         return ror(t, magic % 17) ^ magic
 
@@ -77,7 +77,7 @@ class LeParser(Parser):
         return stream_type
 
     def get_vid(self, url):
-        return match1(url, 'vplay/(\d+).html', '#record/(\d+)')[0]
+        return match1(url, 'vplay/(\d+).html', '#record/(\d+)')
 
     def get_first_json(self, vid):
         # normal process

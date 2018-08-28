@@ -20,23 +20,26 @@ class NullLock(object):
 
 
 class LRUCache(collections.MutableMapping):
-    def __init__(self, size=5, timeout=60, delete_handle=None, after_delete_handle=None, use_lock=True, *args,
+    def __init__(self, size=5, timeout=60, delete_handle=None, after_delete_handle=None, use_lock=True,
+                 use_default_dict=False, default_factory=None, *args,
                  **kwargs):
         self.size = size
         self.timeout = timeout
-        self._store = {}
+        self._store = collections.defaultdict(
+            default_factory) if use_default_dict or default_factory is not None else dict()
         self._keys_to_last_time = collections.OrderedDict()
         self._lock = threading.RLock() if use_lock else NullLock()
         self.delete_handle = delete_handle
         self.after_delete_handle = after_delete_handle
         self.update(dict(*args, **kwargs))
 
-    def flush(self, key):
+    def flush(self, key, not_sweep=False):
         with self._lock:
             t = time.time()
             self._keys_to_last_time[key] = t
             self._keys_to_last_time.move_to_end(key, False)  # move to start
-            self.sweep()
+            if not not_sweep:
+                self.sweep()
 
     def __getitem__(self, key):
         with self._lock:
@@ -59,6 +62,18 @@ class LRUCache(collections.MutableMapping):
     def __len__(self):
         with self._lock:
             return len(self._store)
+
+    def __contains__(self, item):
+        with self._lock:
+            return item in self._store
+
+    def __str__(self):
+        with self._lock:
+            return str(self._store)
+
+    def __repr__(self):
+        with self._lock:
+            return repr(self._store)
 
     def items(self):
         with self._lock:
@@ -96,26 +111,23 @@ class LRUCache(collections.MutableMapping):
                     return
 
     def _delete(self, key, call_handle=True):
-        value = self._store[key]
         if call_handle and self.delete_handle:
+            value = self._store[key]
             if self.delete_handle((key, value)) is False:
                 self.flush(key)
                 return False
-        del self._store[key]
-        del self._keys_to_last_time[key]
-        if call_handle and self.after_delete_handle:
+            self._delete(key, call_handle=False)
             self.after_delete_handle((key, value))
+        else:
+            del self._store[key]
+            del self._keys_to_last_time[key]
 
 
 import typing
 
 KT = typing.TypeVar('KT')  # Key type.
 VT = typing.TypeVar('VT')  # Value type.
-
-
-class LRUCacheType(LRUCache, typing.MutableMapping[KT, VT], extra=LRUCache):
-    pass
-
+LRUCacheType = typing.MutableMapping[KT, VT]
 
 if __name__ == '__main__':
     l = LRUCache(5, 10)

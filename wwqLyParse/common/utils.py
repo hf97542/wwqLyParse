@@ -18,13 +18,9 @@ def get_main():
     return main
 
 
-def get_main_parse():
-    return functools.partial(get_main().parse, use_inside=True)
-
-
-def get_caller_info():
+def get_caller_info(call_deep=0):
     try:
-        fn, lno, func, sinfo = traceback.extract_stack()[-3]
+        fn, lno, func, sinfo = traceback.extract_stack()[-(2 + call_deep)]
     except ValueError:  # pragma: no cover
         fn, lno, func = "(unknown file)", 0, "(unknown function)"
     try:
@@ -35,7 +31,7 @@ def get_caller_info():
     return callmethod
 
 
-def print_exception(e):
+def format_exception(e):
     line = traceback.format_exception(Exception, e, e.__traceback__)
     text = ''.join(line)
     return text

@@ -12,7 +12,7 @@ try:
 except Exception as e:
     from common import *
 
-__MODULE_CLASS_NAMES__ = ["IQiYiAListParser", "IQiYiLibMListParser", "IQiYiVListParser"]
+__all__ = ["IQiYiAListParser", "IQiYiLibMListParser", "IQiYiVListParser"]
 
 
 class IQiYiAListParser(Parser):
@@ -228,7 +228,6 @@ class IQiYiAListParser(Parser):
             return data
 
         # print("2"+input_text)
-
         html_text = get_url(input_text)
         html = PyQuery(html_text)
         title = html('h1.main_title > a').text()
@@ -286,9 +285,7 @@ class IQiYiLibMListParser(Parser):
         if url and re.search(r"www.iqiyi.com/lib/m", url):
             url = None
         if url:
-            result = get_main_parse()(input_text=url, types="list")
-            if result:
-                return result
+            return ReCallMainParseFunc(input_text=url, types="list")
 
         """
         album_items = html('div.clearfix').children('li.album_item')
@@ -363,10 +360,15 @@ class IQiYiVListParser(Parser):
             jss = html("script[type='text/javascript']")
             for item in jss:
                 text = PyQuery(item).text()
-                if "Q.PageInfo.playPageData = {" in text:
+                # logging.debug(text)
+                if "Q.PageInfo.playPageData = {" in text or \
+                        "Q.PageInfo.playPageInfo = Q.PageInfo.playPageInfo || {" in text:
                     split_text = text.replace("\r", ""). \
                                      replace("\n", ""). \
                                      replace("Q.PageInfo.playPageData = {", ""). \
+                                     replace("window.Q = window.Q || {};", ""). \
+                                     replace("var Q = window.Q; Q.PageInfo = Q.PageInfo || {};", ""). \
+                                     replace("Q.PageInfo.playPageInfo = Q.PageInfo.playPageInfo ||", ""). \
                                      strip(). \
                                      replace("albumData:", ""). \
                                      strip()[:-1].strip()
@@ -386,6 +388,10 @@ class IQiYiVListParser(Parser):
                                 if url:
                                     logging.debug(url)
                                     break
+                        elif "albumUrl" in data and data["albumUrl"]:
+                            url = "http:" + data["albumUrl"]
+                            logging.debug(url)
+                            break
                     except json.JSONDecodeError:
                         logging.exception("IQiYiVListParser Error")
                 if url:
@@ -429,9 +435,7 @@ class IQiYiVListParser(Parser):
             if str(url).startswith("//"):
                 url = "http:" + str(url)
             logging.info("change %s to %s" % (input_text, url))
-            result = get_main_parse()(input_text=url, types="list")
-            if result:
-                return result
+            return ReCallMainParseFunc(input_text=url, types="list")
 
     # plan B
     # http://cache.video.qiyi.com/jp/vi/451038600/faca833cc73ec8d7d8d248199bc3e7b8/?callback=Q9edfe6276cafa46823e1a575b86be2cb
