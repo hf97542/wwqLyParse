@@ -13,7 +13,8 @@ import threading
 import logging
 from queue import Queue, Empty
 import time
-from .base import *
+from ._base import *
+from ..lib_wwqLyParse import AtomicInt64
 
 LOGGER = logging.getLogger("concurrent.futures")
 
@@ -55,7 +56,7 @@ class _WorkItem(object):
             self.future.set_result(result)
 
 
-def _worker(executor_reference, work_queue: Queue, initializer, initargs, timeout):
+def _worker(executor_reference, work_queue: Queue, initializer, initargs, timeout, waiting_worker_counter: AtomicInt64):
     if initializer is not None:
         try:
             initializer(*initargs)
@@ -68,9 +69,12 @@ def _worker(executor_reference, work_queue: Queue, initializer, initargs, timeou
     try:
         while True:
             try:
+                waiting_worker_counter += 1
                 work_item = work_queue.get(block=True, timeout=timeout)
             except Empty:
                 return
+            finally:
+                waiting_worker_counter -= 1
             if work_item is not None:
                 work_item.run()
                 # Delete references to object. See issue16284
@@ -82,6 +86,10 @@ def _worker(executor_reference, work_queue: Queue, initializer, initargs, timeou
             #   - The executor that owns the worker has been collected OR
             #   - The executor that owns the worker has been shutdown.
             if _shutdown or executor is None or executor._shutdown:
+                # Flag the executor as shutting down as early as possible if it
+                # is not gc-ed yet.
+                if executor is not None:
+                    executor._shutdown = True
                 # Notice other workers
                 work_queue.put(None)
                 return
@@ -119,6 +127,7 @@ class ThreadPoolExecutor(Executor):
         self._initargs = initargs
         self._thread_dead_timeout = thread_dead_timeout
         self._thread_name_counter = itertools.count().__next__
+        self._waiting_worker_counter = AtomicInt64()
 
     def submit(self, fn, *args, **kwargs):
         with self._shutdown_lock:
@@ -141,35 +150,40 @@ class ThreadPoolExecutor(Executor):
     submit.__doc__ = Executor.submit.__doc__
 
     def _adjust_thread_count(self):
-        time.sleep(0.01)
-        if self._work_queue.qsize():
+        # time.sleep(0.01)
+        require_num = self._work_queue.qsize() - self._waiting_worker_counter.get()
+        if require_num > 0:
             # When the executor gets lost, the weakref callback will wake up
             # the worker threads.
             def weakref_cb(_, q=self._work_queue):
                 q.put(None)
 
-            dead_list = list()
-            for t in self._threads:
-                if not t.is_alive():
-                    dead_list.append(t)
-            for t in dead_list:
-                self._threads.remove(t)
-            del dead_list
+            for _ in range(require_num):
+                dead_list = list()
+                for t in self._threads:
+                    if not t.is_alive():
+                        dead_list.append(t)
+                for t in dead_list:
+                    self._threads.remove(t)
+                del dead_list
 
-            num_threads = len(self._threads)
-            if not self._max_workers or num_threads < self._max_workers:
-                thread_name = '%s_%d' % (self._thread_name_prefix or self,
-                                         self._thread_name_counter())
-                t = threading.Thread(name=thread_name, target=_worker,
-                                     args=(weakref.ref(self, weakref_cb),
-                                           self._work_queue,
-                                           self._initializer,
-                                           self._initargs,
-                                           self._thread_dead_timeout))
-                t.daemon = True
-                t.start()
-                self._threads.add(t)
-                _threads_queues[t] = self._work_queue
+                num_threads = len(self._threads)
+                if not self._max_workers or num_threads < self._max_workers:
+                    thread_name = '%s_%d' % (self._thread_name_prefix or self,
+                                             self._thread_name_counter())
+                    t = threading.Thread(name=thread_name, target=_worker,
+                                         args=(weakref.ref(self, weakref_cb),
+                                               self._work_queue,
+                                               self._initializer,
+                                               self._initargs,
+                                               self._thread_dead_timeout,
+                                               self._waiting_worker_counter))
+                    t.daemon = True
+                    t.start()
+                    self._threads.add(t)
+                    _threads_queues[t] = self._work_queue
+                else:
+                    break
 
     def _initializer_failed(self):
         with self._shutdown_lock:

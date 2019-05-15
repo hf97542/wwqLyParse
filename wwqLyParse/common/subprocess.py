@@ -58,12 +58,39 @@ def run_subprocess(args, timeout=None, need_stderr=True, **kwargs):
         logging.debug("Timeout!!! kill %s" % p)
         p.kill()
         stdout, stderr = p.communicate()
-    # try to decode
-    stdout = try_decode(stdout)
-    stderr = try_decode(stderr) if need_stderr else None
-    # print(stdout)
-    return stdout, stderr
+    else:
+        # try to decode
+        stdout = try_decode(stdout)
+        stderr = try_decode(stderr) if need_stderr else None
+        # print(stdout)
+        return stdout, stderr
 
 
-def debug(text):
+from . import asyncio
+
+
+async def async_run_subprocess(args, timeout=None, need_stderr=True, **kwargs):
+    pipe = subprocess.PIPE
+    logging.debug(args)
+    # args = subprocess.list2cmdline(args)
+    p = await asyncio.create_subprocess_exec(*args, stdout=pipe, stderr=pipe if need_stderr else None, **kwargs)
+    try:
+        stdout, stderr = await asyncio.wait_for(p.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        raise asyncio.CancelledError
+    else:
+        # try to decode
+        stdout = try_decode(stdout)
+        stderr = try_decode(stderr) if need_stderr else None
+        # print(stdout)
+        return stdout, stderr
+    finally:
+        try:
+            p.terminate()
+            logging.debug("Timeout!!! kill %s" % p)
+        except:
+            pass
+
+
+def safe_print(text):
     print((str(text)).encode('gbk', 'ignore').decode('gbk'))

@@ -16,11 +16,17 @@ __all__ = ["YouGetParser"]
 class YouGetParser(Parser):
     filters = ['^(http|https)://.+']
     types = ["formats"]
-    un_supports = ["www.iqiyi.com", "www.iqiyi.com/a_", 'www.iqiyi.com/lib/m', 'list.iqiyi.com', 'list.youku.com',
-                   'www.le.com', 'www.mgtv.com', 'yinyuetai.com', 'pptv.com',
-                   r'^(http|https)://cache.',
-                   r'^(http|https)://defaultts.tc.qq.com.',
-                   r'^(http|https)://\d+\.\d+\.\d+\.\d+']
+    un_supports = [
+        "www.iqiyi.com", "www.iqiyi.com/a_", 'www.iqiyi.com/lib/m', 'list.iqiyi.com',
+        'list.youku.com',
+        'www.le.com',
+        'www.mgtv.com',
+        'yinyuetai.com',
+        'pptv.com',
+        r'^(http|https)://cache.',
+        r'^(http|https)://defaultts.tc.qq.com.',
+        r'^(http|https)://\d+\.\d+\.\d+\.\d+'
+    ]
     bin = './you-get/you-get'
     name = "you-get解析"
 
@@ -52,7 +58,7 @@ class YouGetParser(Parser):
         return ["--http-proxy", "localhost:%s" % port]
 
     # run you-get
-    def _run(self, arg, need_stderr=False, use_hps=True):
+    async def _run(self, arg, need_stderr=False, use_hps=True):
         y_bin = get_real_path(self.bin)
         py_bin = self._get_py_bin()
         if "PyRun.exe" in py_bin:
@@ -60,13 +66,13 @@ class YouGetParser(Parser):
         else:
             args = [py_bin, y_bin]
         if use_hps:
-            with HttpProxyServer() as hps:
+            async with AsyncHttpProxyServer() as hps:
                 args += self._get_proxy_args(hps.port)
                 args += arg
-                return run_subprocess(args, get_main().PARSE_TIMEOUT - 5, need_stderr)
+                return await async_run_subprocess(args, asyncio.get_left_time() - 0.1, need_stderr)
         else:
             args += arg
-            return run_subprocess(args, get_main().PARSE_TIMEOUT - 5, need_stderr)
+            return await async_run_subprocess(args, asyncio.get_left_time() - 0.1, need_stderr)
 
     # parse you-get output for parse
     def _parse_parse(self, raw):
@@ -241,9 +247,9 @@ streams:             # Available quality and codecs
         return info
 
     # parse functions
-    def _parse(self, url, *k, **kk):
+    async def _parse(self, url, *k, **kk):
         yarg = self._make_arg(url, *k, **kk)
-        stdout, stderr = self._run(yarg)
+        stdout, stderr = await self._run(yarg)
         # print(stdout)
         # try to decode
         err = None
@@ -272,8 +278,8 @@ streams:             # Available quality and codecs
         out = self._parse_parse(info)
         return out
 
-    def parse(self, url, *k, **kk):
-        out = self._parse(url, *k, **kk)
+    async def parse(self, url, *k, **kk):
+        out = await self._parse(url, *k, **kk)
         # if "bilibili" in url:
         #     for item in out['data']:
         #         if isinstance(item, dict):
@@ -290,18 +296,18 @@ streams:             # Available quality and codecs
         #                             item2["args"] = {'Referer': url}
         return out
 
-    def _parse_url(self, url, label, min=None, max=None, *k, **kk):
+    async def _parse_url(self, url, label, min=None, max=None, *k, **kk):
         _format = parse_label(label)
         yarg = self._make_arg(url, _format, *k, **kk)
-        stdout, stderr = self._run(yarg)
+        stdout, stderr = await self._run(yarg)
         # just load json, without ERROR check
         info = self._try_parse_json(stdout)
         logging.debug("\n" + str(info))
         out = self._parse_parse_url(info, _format)
         return out
 
-    def parse_url(self, url, label, min=None, max=None, *k, **kk):
-        out = self._parse_url(url, label, min, max, *k, **kk)
+    async def parse_url(self, url, label, min=None, max=None, *k, **kk):
+        out = await self._parse_url(url, label, min, max, *k, **kk)
         if "iqiyi" in url:
             for item in out:
                 item["unfixIp"] = True
@@ -324,9 +330,9 @@ streams:             # Available quality and codecs
 
         return out
 
-    def get_version(self):
+    async def get_version(self):
         try:
-            stdout, stderr = self._run(['--version'], need_stderr=True, use_hps=False)
+            stdout, stderr = await self._run(['--version'], need_stderr=True, use_hps=False)
             if "Errno" in stderr:
                 return ""
             return stderr.split(',')[0]

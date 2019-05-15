@@ -2,13 +2,9 @@
 # -*- coding: utf-8 -*-
 # author wwqgtxx <wwqgtxx@gmail.com>
 from .base import *
-from ..selectors import DefaultSelector
-from ..concurrent_futures import ThreadPoolExecutor
 import logging
 import weakref
 import aiohttp
-import asyncio
-import threading
 
 
 class TCPConnector(aiohttp.TCPConnector):
@@ -24,20 +20,34 @@ class TCPConnector(aiohttp.TCPConnector):
         return conn
 
 
-class AioHttpGetUrlStreamReader(GetUrlStreamReader):
+class AioHttpGetUrlStreamReader(GetUrlStreamReaderAsync):
+    decoded_encoding = GetUrlStreamReaderAsync.decoded_encoding + ['br']
+
     def __init__(self, resp: aiohttp.ClientResponse, loop: asyncio.AbstractEventLoop):
+        super().__init__(loop)
         self.resp = resp
-        self.loop = loop
 
-    def _read(self, size):
-        return asyncio.run_coroutine_threadsafe(self.resp.content.read(size), loop=self.loop).result()
+    async def _read_async(self, size):
+        return await asyncio.async_run_in_loop(self.resp.content.read(size), loop=self.loop)
 
-    def __enter__(self):
-        asyncio.run_coroutine_threadsafe(self.resp.__aenter__(), loop=self.loop).result()
+    async def __aenter__(self):
+        await asyncio.async_run_in_loop(self.resp.__aenter__(), loop=self.loop)
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        asyncio.run_coroutine_threadsafe(self.resp.__aexit__(exc_type, exc_val, exc_tb), loop=self.loop).result()
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await asyncio.async_run_in_loop(self.resp.__aexit__(exc_type, exc_val, exc_tb), loop=self.loop)
+
+
+async def __close_connector(connector: TCPConnector):
+    logging.debug("close %s" % connector)
+    await connector.close()
+
+
+def _close_connector(loop: asyncio.AbstractEventLoop, connector: TCPConnector):
+    try:
+        asyncio.run_coroutine_threadsafe(__close_connector(connector), loop).result(1)
+    except:
+        pass
 
 
 class AioHttpGetUrlImpl(GetUrlImpl):
@@ -45,28 +55,19 @@ class AioHttpGetUrlImpl(GetUrlImpl):
     def __init__(self, service):
         super().__init__(service)
         logging.getLogger("chardet").setLevel(logging.WARNING)
-        self.common_loop = self._get_async_loop()
+        self.common_loop = service.loop
         self.common_connector = TCPConnector(limit=GET_URL_PARALLEL_LIMIT, loop=self.common_loop)
-        self.common_cookie_jar = aiohttp.CookieJar(loop=self.common_loop)
+        self.common_cookie_jar = self.new_cookie_jar()
         self.common_client_timeout = aiohttp.ClientTimeout(sock_connect=GET_URL_CONNECT_TIMEOUT,
                                                            sock_read=GET_URL_RECV_TIMEOUT)
         logging.debug("init %s" % self.common_connector)
-        weakref.finalize(self, self.common_connector.close)
+        weakref.finalize(self, _close_connector, self.common_loop, self.common_connector)
 
-    def _get_async_loop(self):
-        loop = asyncio.SelectorEventLoop(DefaultSelector())
-        loop.set_default_executor(ThreadPoolExecutor())
+    def new_cookie_jar(self):
+        return aiohttp.CookieJar(loop=self.common_loop)
 
-        def _run_forever():
-            logging.debug("start loop %s", loop)
-            asyncio.set_event_loop(loop)
-            loop.run_forever()
-
-        threading.Thread(target=_run_forever, name="GetUrlLoopThread", daemon=True).start()
-        return loop
-
-    async def _get_url_aiohttp(self, url_json, o_url, encoding, headers, data, method, callmethod, verify, cookies,
-                               retry_num, stream, connector=None, cookie_jar=None):
+    async def _get_url_aiohttp(self, url_json, o_url, encoding, headers, data, method, callmethod, verify,
+                               cookies, cookie_jar, retry_num, stream, connector=None):
         async def __get_url_aiohttp(session: aiohttp.ClientSession):
             for i in range(0, retry_num + 1):
                 try:
@@ -77,7 +78,8 @@ class AioHttpGetUrlImpl(GetUrlImpl):
                                                  proxy=self.service.http_proxy or None)
                     result = GetUrlResponse(headers=dict(resp.headers),
                                             url=str(resp.url),
-                                            status_code=resp.status)
+                                            status_code=resp.status,
+                                            url_json=url_json)
                     if stream:
                         result.content = AioHttpGetUrlStreamReader(resp, self.common_loop)
                     else:
@@ -110,8 +112,7 @@ class AioHttpGetUrlImpl(GetUrlImpl):
             cookie_jar = self.common_cookie_jar
         if cookies is EMPTY_COOKIES:
             cookies = {}
-        if cookies is not None:
-            cookie_jar = None
+            cookie_jar = self.new_cookie_jar()
         try:
             async with aiohttp.ClientSession(connector=connector, connector_owner=False,
                                              cookies=cookies, cookie_jar=cookie_jar) as _session:
@@ -121,10 +122,6 @@ class AioHttpGetUrlImpl(GetUrlImpl):
         except:
             logging.exception(callmethod + "get url " + url_json + "fail")
 
-    def get_url(self, url_json, url_json_dict, callmethod, pool=None):
-        retry_num = GET_URL_RETRY_NUM
-        future = asyncio.run_coroutine_threadsafe(
-            self._get_url_aiohttp(url_json=url_json, callmethod=callmethod, retry_num=retry_num,
-                                  **url_json_dict), loop=self.common_loop)
-        result = future.result()
-        return result
+    async def get_url(self, url_json, url_json_dict, callmethod):
+        return await self._get_url_aiohttp(url_json=url_json, callmethod=callmethod, retry_num=GET_URL_RETRY_NUM,
+                                           **url_json_dict)

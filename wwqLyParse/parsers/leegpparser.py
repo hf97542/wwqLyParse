@@ -40,17 +40,17 @@ class LeEGPParser(Parser):
     def get_vid(self, url):
         return match1(url, 'vplay/(\d+).html', '#record/(\d+)')
 
-    def get_first_json(self, vid, q):
+    async def get_first_json(self, vid, q):
         # normal process
         if type(q) == list:
             q = ','.join(q)
         url = 'http://tvepg.letv.com/apk/data/common/security/playurl/geturl/byvid.shtml?vid=%s&key=&vtype=%s' % (
             vid, q)
-        r = get_url(url, allow_cache=False)
+        r = await get_url_service.get_url_async(url, allow_cache=False)
         data = json.loads(r)
         return data
 
-    def parse(self, input_text, *k, **kk):
+    async def parse(self, input_text, *k, **kk):
         info = {
             "type": "formats",
             "name": "",
@@ -62,11 +62,11 @@ class LeEGPParser(Parser):
             "data": []
         }
 
-        html = get_url(input_text)
+        html = await get_url_service.get_url_async(input_text)
         info['name'] = match1(html, r'title:"(.+?)",')
         vid = self.get_vid(input_text)
-        data = self.get_first_json(vid, self.stream_ids)
-        debug(json.dumps(data))
+        data = await self.get_first_json(vid, self.stream_ids)
+        safe_print(json.dumps(data))
         if data["statusCode"] != 1001:
             return
         if not data["data"]:
@@ -80,20 +80,23 @@ class LeEGPParser(Parser):
                 "label": "%s-%s-%s-%sx%s-%skbps-%skbps" % (
                     # q,
                     # self.get_stream_type(q)["video_profile"],
-                    data_info["gfmt"].lower(),
-                    data_info["vfmt"].upper(),
-                    data_info["afmt"].replace(' ', '').replace('-', ''),
-                    data_info["vwidth"],
-                    data_info["vheight"],
-                    data_info["vbr"],
-                    data_info["abr"]),
+                    data_info.get("gfmt", "").lower(),
+                    data_info.get("vfmt", "").upper(),
+                    data_info.get("afmt", "").replace(' ', '').replace('-', ''),
+                    data_info.get("vwidth", ""),
+                    data_info.get("vheight", ""),
+                    data_info.get("vbr", ""),
+                    data_info.get("abr", "")),
                 "code": q,
-                "ext": 'ts',  # data_info["gfmt"],
-                "size": byte2size(data_info["gsize"]),
+                "ext": 'ts',  # data_info.get("gfmt",""),
+                "size": byte2size(data_info.get("gsize", "")),
                 "type": "",
                 "download": [{
                     "protocol": "m3u8",
-                    "urls": data_info["mainUrl"],
+                    "urls": [data_info.get("mainUrl", ""),
+                             data_info.get("backUrl0", ""),
+                             data_info.get("backUrl1", ""),
+                             data_info.get("backUrl2", "")],
                     # "maxDown" : 1,
                     "unfixIp": True
                 }]

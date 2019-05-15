@@ -229,7 +229,7 @@ class PPTVParser(Parser):
             stream_type = {'id': stream_id, 'container': 'm3u8', 'video_profile': stream_id}
         return stream_type
 
-    def parse(self, input_text, *k, **kk):
+    async def parse(self, input_text, *k, **kk):
         info = {
             "type": "formats",
             "name": "",
@@ -240,21 +240,24 @@ class PPTVParser(Parser):
             # "sorted" : 1,
             "data": []
         }
-
-        html = get_url(input_text)
-        for _ in range(3):
-            if """document.write('<meta http-equiv="Refresh" Content="0; Url='+u+'">')""" in html:
-                logging.debug(html)
-                html = get_url(input_text, force_flush_cache=True)
-            else:
-                break
-        # logging.debug(html)
+        html = await get_url_service.get_url_async(input_text)
         vid = match1(html, 'webcfg\s*=\s*{"id":\s*(\d+)')
-        xml = get_url(
-            'http://web-play.pptv.com/webplay3-0-{}.xml?zone=8&version=4&username=&ppi=302c3333&type=ppbox.launcher&pageUrl=http%3A%2F%2Fv.pptv.com&o=0&referrer=&kk=&scver=1&appplt=flp&appid=pptv.flashplayer.vod&appver=3.4.3.3&nddp=1'.format(
-                vid), allow_cache=False)
-        # logging.debug(xml)
-        dom = parseString(xml)
+        # logging.debug(html)
+        if not vid:
+            logging.warning(html)
+            return None
+        while True:
+            xml = await get_url_service.get_url_async(
+                'http://web-play.pptv.com/webplay3-0-{}.xml?zone=8&version=4&username=&ppi=302c3333&type=ppbox.launcher&pageUrl=http%3A%2F%2Fv.pptv.com&o=0&referrer=&kk=&scver=1&appplt=flp&appid=pptv.flashplayer.vod&appver=3.4.3.3&nddp=1'.format(
+                    vid), allow_cache=False)
+            if xml.startswith("<html>"):
+                continue
+            try:
+                # logging.debug(xml)
+                dom = parseString(xml)
+                break
+            except Exception:
+                logging.exception(xml)
         m_title, m_items, m_streams, m_segs = parse_pptv_xml(dom)
         xml_streams = merge_meta(m_items, m_streams, m_segs)
         logging.debug(xml_streams)

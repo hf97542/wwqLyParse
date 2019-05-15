@@ -2,13 +2,13 @@
 # -*- coding: utf-8 -*-
 # author wwqgtxx <wwqgtxx@gmail.com>
 from .base import *
-from ..workerpool import *
 import warnings
 import logging
 import functools
 import urllib3
 import requests
 import requests.adapters
+import requests.cookies
 
 
 class RequestsGetUrlStreamReader(GetUrlStreamReader):
@@ -33,8 +33,11 @@ class RequestsGetUrlImpl(GetUrlImpl):
         warnings.filterwarnings("ignore", module="urllib3")
         logging.getLogger("chardet").setLevel(logging.WARNING)
         self.common_http_adapter = self._get_http_adapter()
-        self.common_session = self._get_session()
+        self.common_cookie_jar = self.new_cookie_jar()
         self.common_timeout = (GET_URL_CONNECT_TIMEOUT, GET_URL_RECV_TIMEOUT)
+
+    def new_cookie_jar(self):
+        return requests.cookies.cookiejar_from_dict({})
 
     def _get_http_adapter(self, size=GET_URL_PARALLEL_LIMIT, retry=GET_URL_RETRY_NUM):
         return requests.adapters.HTTPAdapter(pool_connections=size,
@@ -54,14 +57,16 @@ class RequestsGetUrlImpl(GetUrlImpl):
             }
         return session
 
-    def _get_url_requests(self, url_json, o_url, encoding, headers, data, method, callmethod, verify, cookies,
-                          use_pool, stream):
+    def _get_url_requests(self, url_json, o_url, encoding, headers, data, method, callmethod, verify,
+                          cookies, cookie_jar, stream):
         try:
+            session = self._get_session()
+            if cookie_jar is None:
+                cookie_jar = self.common_cookie_jar
             if cookies is EMPTY_COOKIES:
                 cookies = {}
-                session = self._get_session()
-            else:
-                session = self.common_session
+                cookie_jar = self.new_cookie_jar()
+            session.cookies = cookie_jar
             resp = session.request(method=method if method else "GET", url=o_url,
                                    headers=headers if headers else self.service.fake_headers, data=data,
                                    cookies=cookies,
@@ -70,7 +75,8 @@ class RequestsGetUrlImpl(GetUrlImpl):
                                    timeout=self.common_timeout)
             result = GetUrlResponse(headers=dict(resp.headers),
                                     url=str(resp.url),
-                                    status_code=resp.status_code)
+                                    status_code=resp.status_code,
+                                    url_json=url_json)
             if stream:
                 result.content = RequestsGetUrlStreamReader(resp)
             else:
@@ -84,20 +90,11 @@ class RequestsGetUrlImpl(GetUrlImpl):
             return result
         except requests.exceptions.RequestException as e:
             logging.warning(callmethod + 'requests error %s' % e)
-        except GreenletExit as e:
-            if use_pool:
-                return None
-            else:
-                raise e
+        # except Cancelled:
+        #     raise
         except:
             logging.exception(callmethod + "get url " + url_json + "fail")
         return None
 
-    def get_url(self, url_json, url_json_dict, callmethod, pool=None):
-        fn = functools.partial(self._get_url_requests, url_json=url_json, callmethod=callmethod,
-                               use_pool=pool is not None, **url_json_dict)
-        if pool is not None:
-            result = pool.apply(fn)
-        else:
-            result = fn()
-        return result
+    def get_url(self, url_json, url_json_dict, callmethod):
+        return self._get_url_requests(url_json=url_json, callmethod=callmethod, **url_json_dict)

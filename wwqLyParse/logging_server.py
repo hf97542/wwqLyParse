@@ -3,13 +3,13 @@
 # author wwqgtxx <wwqgtxx@gmail.com>
 
 if __name__ == "__main__":
-    try:
-        from gevent import monkey
-
-        monkey.patch_all()
-        del monkey
-    except Exception:
-        gevent = None
+    # try:
+    #     from gevent import monkey
+    #
+    #     monkey.patch_all()
+    #     del monkey
+    # except Exception:
+    #     gevent = None
     import os
     import sys
 
@@ -32,6 +32,8 @@ logging.basicConfig(level=LEVEL, format=FORMAT, datefmt=DATA_FMT, stream=sys.std
 
 from common import *
 
+asyncio.patch_logging()
+
 
 def _handle(data):
     print(data.decode("utf-8"))
@@ -40,8 +42,9 @@ def _handle(data):
 def main():
     address_logging = ADDRESS_LOGGING
     logging.info("listen address:'%s'" % address_logging)
-    ConnectionServer(address_logging, _handle).run()
+    asyncio.run_in_main_async_loop(ConnectionServer(address_logging, _handle).run()).result()
 
 
 if __name__ == "__main__":
+    asyncio.start_main_async_loop_in_other_thread()
     main()
